@@ -3,15 +3,15 @@
  * Automatically monitors Gmail for PrepWorx shipment notifications and logs data to Google Sheets
  * 
  * Setup Instructions:
- * 1. Update CONFIG.SHEET_ID with your Google Sheet ID
+ * 1. Update CHECKIN_CONFIG.SHEET_ID with your Google Sheet ID
  * 2. Run completeSetup() function to initialize everything
  * 3. Grant required permissions when prompted
  * 4. Test with testEmailProcessing() function
  */
 
-// ==================== CONFIGURATION ====================
+// ==================== CHECKIN_CONFIGURATION ====================
 
-const CONFIG = {
+const CHECKIN_CONFIG = {
   // Your Google Sheet ID (found in the URL between /d/ and /edit)
   SHEET_ID: '1uK9Vv6rEQ8-WUc3core1TJtozUdLZP0bnlsf9qUsnL0',
   
@@ -48,7 +48,7 @@ function processNewEmails() {
     }
     
     // Search for unprocessed PrepWorx emails
-    const searchQuery = `from:${CONFIG.EMAIL_FROM} subject:"${CONFIG.EMAIL_SUBJECT_CONTAINS}" subject:"${CONFIG.EMAIL_SUBJECT_PROCESSED}" -label:${CONFIG.PROCESSED_LABEL}`;
+    const searchQuery = `from:${CHECKIN_CONFIG.EMAIL_FROM} subject:"${CHECKIN_CONFIG.EMAIL_SUBJECT_CONTAINS}" subject:"${CHECKIN_CONFIG.EMAIL_SUBJECT_PROCESSED}" -label:${CHECKIN_CONFIG.PROCESSED_LABEL}`;
     const threads = GmailApp.search(searchQuery, 0, 50);
     
     Logger.info(`Found ${threads.length} unprocessed email threads`);
@@ -59,7 +59,7 @@ function processNewEmails() {
     }
     
     // Get or create the processed label
-    const processedLabel = getOrCreateLabel(CONFIG.PROCESSED_LABEL);
+    const processedLabel = getOrCreateLabel(CHECKIN_CONFIG.PROCESSED_LABEL);
     
     // Process each thread
     let processedCount = 0;
@@ -126,7 +126,7 @@ function processEmail(message) {
  */
 function isFromPrepWorx(message) {
   const from = message.getFrom().toLowerCase();
-  return from.includes(CONFIG.EMAIL_FROM.toLowerCase()) || 
+  return from.includes(CHECKIN_CONFIG.EMAIL_FROM.toLowerCase()) || 
          from.includes('prepworx');
 }
 
@@ -537,22 +537,22 @@ function getOrCreateSheet() {
     
     // Try to open existing spreadsheet
     try {
-      spreadsheet = SpreadsheetApp.openById(CONFIG.SHEET_ID);
+      spreadsheet = SpreadsheetApp.openById(CHECKIN_CONFIG.SHEET_ID);
     } catch (error) {
       Logger.warn('Could not open spreadsheet with provided ID, creating new one...');
       
       // Create new spreadsheet
       spreadsheet = SpreadsheetApp.create('PrepWorx Check-in Logger');
       Logger.info(`Created new spreadsheet: ${spreadsheet.getId()}`);
-      console.log(`Please update CONFIG.SHEET_ID to: ${spreadsheet.getId()}`);
+      console.log(`Please update CHECKIN_CONFIG.SHEET_ID to: ${spreadsheet.getId()}`);
     }
     
     // Get or create the specified sheet
-    let sheet = spreadsheet.getSheetByName(CONFIG.SHEET_NAME);
+    let sheet = spreadsheet.getSheetByName(CHECKIN_CONFIG.SHEET_NAME);
     
     if (!sheet) {
-      sheet = spreadsheet.insertSheet(CONFIG.SHEET_NAME);
-      Logger.info(`Created new sheet: ${CONFIG.SHEET_NAME}`);
+      sheet = spreadsheet.insertSheet(CHECKIN_CONFIG.SHEET_NAME);
+      Logger.info(`Created new sheet: ${CHECKIN_CONFIG.SHEET_NAME}`);
     }
     
     return sheet;
@@ -752,7 +752,7 @@ class RateLimiter {
     try {
       const properties = PropertiesService.getScriptProperties();
       const lastRun = properties.getProperty('LAST_PROCESS_TIME');
-      const minInterval = CONFIG.RATE_LIMIT_SECONDS * 1000; // Convert to milliseconds
+      const minInterval = CHECKIN_CONFIG.RATE_LIMIT_SECONDS * 1000; // Convert to milliseconds
       
       if (!lastRun) {
         properties.setProperty('LAST_PROCESS_TIME', Date.now().toString());
@@ -866,20 +866,20 @@ function updateActivityStats(type, data = {}) {
 
 /**
  * Complete setup wizard - runs all setup steps
- * RUN THIS FIRST after configuring your SHEET_ID
+ * RUN THIS FIRST after CHECKIN_CONFIGuring your SHEET_ID
  */
 function completeSetup() {
   try {
     Logger.info('Starting complete setup...');
     
-    // Step 1: Validate configuration
-    Logger.info('Step 1: Validating configuration...');
-    const configValidation = validateConfiguration();
+    // Step 1: Validate CHECKIN_CONFIGuration
+    Logger.info('Step 1: Validating CHECKIN_CONFIGuration...');
+    const CHECKIN_CONFIGValidation = validateCHECKIN_CONFIGuration();
     
-    if (!configValidation.valid) {
-      Logger.error('Configuration validation failed', configValidation.errors);
-      console.error('Setup failed. Please fix configuration errors:');
-      configValidation.errors.forEach(error => console.error('- ' + error));
+    if (!CHECKIN_CONFIGValidation.valid) {
+      Logger.error('CHECKIN_CONFIGuration validation failed', CHECKIN_CONFIGValidation.errors);
+      console.error('Setup failed. Please fix CHECKIN_CONFIGuration errors:');
+      CHECKIN_CONFIGValidation.errors.forEach(error => console.error('- ' + error));
       return false;
     }
     
@@ -937,10 +937,10 @@ function setupEmailTrigger() {
     // Also set up a time-based trigger as backup
     ScriptApp.newTrigger('processNewEmails')
       .timeBased()
-      .everyMinutes(CONFIG.CHECK_INTERVAL_MINUTES)
+      .everyMinutes(CHECKIN_CONFIG.CHECK_INTERVAL_MINUTES)
       .create();
     
-    Logger.info(`Time-based trigger set up successfully (runs every ${CONFIG.CHECK_INTERVAL_MINUTES} minutes)`);
+    Logger.info(`Time-based trigger set up successfully (runs every ${CHECKIN_CONFIG.CHECK_INTERVAL_MINUTES} minutes)`);
     
   } catch (error) {
     Logger.error('Error setting up triggers', error);
@@ -992,22 +992,22 @@ function initializeSheet() {
 }
 
 /**
- * Configuration validator
+ * CHECKIN_CONFIGuration validator
  */
-function validateConfiguration() {
+function validateCHECKIN_CONFIGuration() {
   const errors = [];
   
-  // Check required configuration
-  if (!CONFIG.SHEET_ID || CONFIG.SHEET_ID === 'YOUR_GOOGLE_SHEET_ID_HERE') {
-    errors.push('SHEET_ID must be configured with your actual Google Sheet ID');
+  // Check required CHECKIN_CONFIGuration
+  if (!CHECKIN_CONFIG.SHEET_ID || CHECKIN_CONFIG.SHEET_ID === 'YOUR_GOOGLE_SHEET_ID_HERE') {
+    errors.push('SHEET_ID must be CHECKIN_CONFIGured with your actual Google Sheet ID');
   }
   
-  if (!CONFIG.EMAIL_FROM) {
-    errors.push('EMAIL_FROM must be configured');
+  if (!CHECKIN_CONFIG.EMAIL_FROM) {
+    errors.push('EMAIL_FROM must be CHECKIN_CONFIGured');
   }
   
-  if (!CONFIG.SHEET_NAME) {
-    errors.push('SHEET_NAME must be configured');
+  if (!CHECKIN_CONFIG.SHEET_NAME) {
+    errors.push('SHEET_NAME must be CHECKIN_CONFIGured');
   }
   
   // Test sheet access
@@ -1028,11 +1028,11 @@ function validateConfiguration() {
   }
   
   if (errors.length > 0) {
-    Logger.error('Configuration validation failed', errors);
+    Logger.error('CHECKIN_CONFIGuration validation failed', errors);
     return { valid: false, errors: errors };
   }
   
-  Logger.info('Configuration validation passed');
+  Logger.info('CHECKIN_CONFIGuration validation passed');
   return { valid: true, errors: [] };
 }
 
@@ -1045,7 +1045,7 @@ function healthCheck() {
     
     const results = {
       timestamp: new Date().toISOString(),
-      configuration: validateConfiguration(),
+      CHECKIN_CONFIGuration: validateCHECKIN_CONFIGuration(),
       triggers: checkTriggers(),
       permissions: checkPermissions(),
       recentActivity: getRecentActivity()
@@ -1102,8 +1102,8 @@ function checkPermissions() {
   
   try {
     // Test Sheets permission
-    if (CONFIG.SHEET_ID !== 'YOUR_GOOGLE_SHEET_ID_HERE') {
-      SpreadsheetApp.openById(CONFIG.SHEET_ID);
+    if (CHECKIN_CONFIG.SHEET_ID !== 'YOUR_GOOGLE_SHEET_ID_HERE') {
+      SpreadsheetApp.openById(CHECKIN_CONFIG.SHEET_ID);
     }
     permissions.sheets = true;
   } catch (error) {
@@ -1154,14 +1154,14 @@ function displaySetupSummary() {
     const summary = `
 === PREPWORX EMAIL LOGGER SETUP COMPLETE ===
 
-✅ Configuration validated
+✅ CHECKIN_CONFIGuration validated
 ✅ Google Sheet initialized
 ✅ Email triggers created (${emailTriggers.length} active)
 ✅ System health check passed
 
 📊 Google Sheet: ${sheetUrl}
-📧 Monitoring emails from: ${CONFIG.EMAIL_FROM}
-🏷️  Processed emails will be labeled: ${CONFIG.PROCESSED_LABEL}
+📧 Monitoring emails from: ${CHECKIN_CONFIG.EMAIL_FROM}
+🏷️  Processed emails will be labeled: ${CHECKIN_CONFIG.PROCESSED_LABEL}
 
 🔄 The system is now running automatically!
 
@@ -1194,7 +1194,7 @@ function testEmailProcessing() {
     
     // Search for PrepWorx emails from last 24 hours
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const searchQuery = `from:${CONFIG.EMAIL_FROM} after:${Utilities.formatDate(yesterday, Session.getScriptTimeZone(), 'yyyy/MM/dd')}`;
+    const searchQuery = `from:${CHECKIN_CONFIG.EMAIL_FROM} after:${Utilities.formatDate(yesterday, Session.getScriptTimeZone(), 'yyyy/MM/dd')}`;
     
     const threads = GmailApp.search(searchQuery, 0, 10);
     Logger.info(`Found ${threads.length} recent email threads for testing`);
@@ -1228,7 +1228,7 @@ function testEmailProcessing() {
  */
 function clearProcessedLabels() {
   try {
-    const label = GmailApp.getUserLabelByName(CONFIG.PROCESSED_LABEL);
+    const label = GmailApp.getUserLabelByName(CHECKIN_CONFIG.PROCESSED_LABEL);
     if (label) {
       const threads = label.getThreads();
       for (const thread of threads) {
