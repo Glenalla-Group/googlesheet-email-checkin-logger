@@ -126,8 +126,13 @@ function processEmail(message) {
  */
 function isFromPrepWorx(message) {
   const from = message.getFrom().toLowerCase();
-  return from.includes(CHECKIN_CONFIG.EMAIL_FROM.toLowerCase()) || 
-         from.includes('prepworx');
+  
+  // Direct emails from PrepWorx (handles both "beta@prepworx.io" and "PrepWorx Beta <beta@prepworx.io>")
+  if (from.includes(CHECKIN_CONFIG.EMAIL_FROM.toLowerCase()) || from.includes('prepworx')) {
+    return true;
+  }
+  
+  return false;
 }
 
 // ==================== EMAIL PARSING FUNCTIONS ====================
@@ -144,10 +149,10 @@ function extractEmailData(message) {
     
     Logger.info('Extracting data from email', { subject });
     
-    // Extract shipment number from subject
-    const shipmentNumber = extractShipmentNumber(subject);
+    // Extract shipment number from subject and content
+    const shipmentNumber = extractShipmentNumber(subject, htmlBody || plainBody);
     if (!shipmentNumber) {
-      Logger.warn('Could not extract shipment number from subject');
+      Logger.warn('Could not extract shipment number from subject or content');
       return null;
     }
     
@@ -184,13 +189,43 @@ function extractEmailData(message) {
 }
 
 /**
- * Extract shipment number from email subject
+ * Extract shipment number from email subject or content
  */
-function extractShipmentNumber(subject) {
+function extractShipmentNumber(subject, content = '') {
   try {
-    // Pattern: "Inbound P7354920059015303168 has been processed."
-    const match = subject.match(/Inbound\s+([A-Z0-9]+)/i);
-    return match ? match[1] : null;
+    // First try to extract from subject
+    // Pattern: "Inbound 0017327917518 has been processed."
+    const subjectPatterns = [
+      /Inbound\s+([A-Z0-9]+)/i,                    // Standard pattern for any alphanumeric
+      /Inbound\s+(\d+)/i,                         // Pattern for pure numbers (like 0017327917518)
+      /Inbound\s+([A-Z]+\d+)/i,                   // Pattern like SNP20046045
+    ];
+    
+    for (const pattern of subjectPatterns) {
+      const match = subject.match(pattern);
+      if (match && match[1]) {
+        return match[1];
+      }
+    }
+    
+    // If not found in subject, try to extract from content
+    // Pattern: "inbound shipment named 0017327917518"
+    if (content) {
+      const contentPatterns = [
+        /inbound\s+shipment\s+named\s+([A-Z0-9]+)/i,
+        /shipment\s+named\s+([A-Z0-9]+)/i,
+        /named\s+([A-Z0-9]+)/i
+      ];
+      
+      for (const pattern of contentPatterns) {
+        const match = content.match(pattern);
+        if (match && match[1]) {
+          return match[1];
+        }
+      }
+    }
+    
+    return null;
   } catch (error) {
     Logger.error('Error extracting shipment number', error);
     return null;
@@ -221,15 +256,11 @@ function parseHtmlContent(htmlBody, shipmentNumber) {
       return null;
     }
     
-    // Return data for the first item (can be extended for multiple items)
-    const firstItem = items[0];
-    
+    // Return data for all items (handle multiple items)
     return {
       orderNumber: orderNumber,
       dateTime: dateTime,
-      itemName: firstItem.itemName,
-      asin: firstItem.asin,
-      quantity: firstItem.quantity,
+      items: items,
       correctOrderNumber: secondaryCode || orderNumber
     };
     
@@ -263,15 +294,11 @@ function parsePlainTextContent(plainBody, shipmentNumber) {
       return null;
     }
     
-    // Return data for the first item
-    const firstItem = items[0];
-    
+    // Return data for all items (handle multiple items)
     return {
       orderNumber: orderNumber,
       dateTime: dateTime,
-      itemName: firstItem.itemName,
-      asin: firstItem.asin,
-      quantity: firstItem.quantity,
+      items: items,
       correctOrderNumber: secondaryCode || orderNumber
     };
     
@@ -432,35 +459,37 @@ function extractItemsFromPlainText(content) {
  */
 function parseItemFromText(text) {
   try {
-    // Pattern: On Running Cloud X 3 Hunter Black 11.5 60.98101 - B0BNC66RPR	1
-    // Or: On Running Cloud X 3 Hunter Black 11.5 60.98101 - B0BNC66RPR 1
+    // Pattern examples:
+    // "Adidas Gazelle Bold Mint Rush Impact Orange Women's 9 IG4386 - B0DDXBXNSP	2"
+    // "Nike P-6000 White Gold Red Women's 7.5 BV1021-101 - B07PH4JSPN	2"
+    // "Nike Ja 2 Breeze 12 FD7328-403 - B0F22FJFHF	2"
     
-    // Extract ASIN (pattern: - B0BNC66RPR)
-    const asinMatch = text.match(/-\s*([A-Z0-9]{10})/);
+    // First, decode HTML entities
+    let cleanText = text.replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+    
+    // Extract ASIN (exactly 10 characters: letters and numbers)
+    const asinMatch = cleanText.match(/-\s*([A-Z0-9]{10})\s/);
     if (!asinMatch) {
       return null;
     }
     
     const asin = asinMatch[1];
     
-    // Extract quantity (last number, usually 1)
-    const parts = text.split(/\s+/);
+    // Extract quantity (number after the ASIN)
+    const afterAsinPattern = new RegExp(asin + '\\s+(\\d+)');
+    const quantityMatch = cleanText.match(afterAsinPattern);
     let quantity = 1;
-    
-    // Look for quantity at the end
-    for (let i = parts.length - 1; i >= 0; i--) {
-      const part = parts[i];
-      if (/^\d+$/.test(part) && part !== asin) {
-        quantity = parseInt(part);
-        break;
-      }
+    if (quantityMatch) {
+      quantity = parseInt(quantityMatch[1]);
     }
     
-    // Extract item name (everything before the ASIN)
-    const beforeAsin = text.substring(0, text.indexOf('-')).trim();
+    // Extract item name (everything before " - ASIN")
+    const asinPosition = cleanText.indexOf(' - ' + asin);
+    if (asinPosition === -1) {
+      return null;
+    }
     
-    // Remove any trailing numbers that might be part of the price/code
-    const itemName = beforeAsin.replace(/\s+[\d.]+$/, '').trim();
+    let itemName = cleanText.substring(0, asinPosition).trim();
     
     if (!itemName) {
       return null;
@@ -492,35 +521,56 @@ function logToSheet(emailData) {
       return false;
     }
     
-    // Prepare row data
-    const rowData = [
-      emailData.dateTime || formatDate(emailData.emailDate),
-      emailData.orderNumber || '',
-      emailData.itemName || '',
-      emailData.asin || '',
-      emailData.quantity || 1,
-      emailData.correctOrderNumber || emailData.orderNumber || ''
-    ];
+    // Handle multiple items if they exist
+    const items = emailData.items || [{ 
+      itemName: emailData.itemName, 
+      asin: emailData.asin, 
+      quantity: emailData.quantity || 1 
+    }];
     
-    // Check for duplicates
-    if (isDuplicateEntry(sheet, emailData)) {
-      Logger.info('Duplicate entry found, skipping...');
-      return true; // Return true since it's not an error
+    let successCount = 0;
+    
+    for (const item of items) {
+      // Prepare row data for each item
+      const rowData = [
+        emailData.dateTime || formatDate(emailData.emailDate),
+        emailData.orderNumber || '',
+        item.itemName || '',
+        item.asin || '',
+        item.quantity || 1,
+        emailData.correctOrderNumber || emailData.orderNumber || ''
+      ];
+      
+      // Create a temporary emailData object for duplicate checking
+      const itemEmailData = {
+        orderNumber: emailData.orderNumber,
+        itemName: item.itemName,
+        asin: item.asin
+      };
+      
+      // Check for duplicates
+      if (isDuplicateEntry(sheet, itemEmailData)) {
+        Logger.info(`Duplicate entry found for item ${item.itemName}, skipping...`);
+        continue;
+      }
+      
+      // Find the next empty row
+      const lastRow = sheet.getLastRow();
+      const nextRow = lastRow + 1;
+      
+      // Insert the data
+      const range = sheet.getRange(nextRow, 1, 1, rowData.length);
+      range.setValues([rowData]);
+      
+      // Format the new row
+      formatNewRow(sheet, nextRow, rowData.length);
+      
+      Logger.info(`Data logged to sheet at row ${nextRow}`, rowData);
+      successCount++;
     }
     
-    // Find the next empty row
-    const lastRow = sheet.getLastRow();
-    const nextRow = lastRow + 1;
-    
-    // Insert the data
-    const range = sheet.getRange(nextRow, 1, 1, rowData.length);
-    range.setValues([rowData]);
-    
-    // Format the new row
-    formatNewRow(sheet, nextRow, rowData.length);
-    
-    Logger.info(`Data logged to sheet at row ${nextRow}`, rowData);
-    return true;
+    Logger.info(`Successfully logged ${successCount} items to sheet`);
+    return successCount > 0;
     
   } catch (error) {
     Logger.error('Error logging to sheet', error);
@@ -614,6 +664,13 @@ function formatNewRow(sheet, rowNumber, columnCount) {
     // Format date column (A)
     const dateRange = sheet.getRange(rowNumber, 1);
     dateRange.setNumberFormat('mm/dd/yyyy, h:mm:ss AM/PM');
+    
+    // Format order number columns (B and F) as text to preserve leading zeros
+    const orderNumberRange = sheet.getRange(rowNumber, 2);
+    orderNumberRange.setNumberFormat('@'); // @ means text format
+    
+    const correctOrderNumberRange = sheet.getRange(rowNumber, 6);
+    correctOrderNumberRange.setNumberFormat('@'); // @ means text format
     
     // Format quantity column (E) as number
     const quantityRange = sheet.getRange(rowNumber, 5);
@@ -978,6 +1035,13 @@ function initializeSheet() {
       headerRange.setBackground('#4285f4');
       headerRange.setFontColor('white');
       
+      // Format order number columns (B and F) as text for the entire columns to preserve leading zeros
+      const orderNumberColumn = sheet.getRange(2, 2, sheet.getMaxRows() - 1, 1);
+      orderNumberColumn.setNumberFormat('@'); // @ means text format
+      
+      const correctOrderNumberColumn = sheet.getRange(2, 6, sheet.getMaxRows() - 1, 1);
+      correctOrderNumberColumn.setNumberFormat('@'); // @ means text format
+      
       // Auto-resize columns
       sheet.autoResizeColumns(1, headerRow.length);
       
@@ -1184,6 +1248,7 @@ Next steps:
   }
 }
 
+
 /**
  * Manual test function - processes emails from the last 24 hours
  * Use this to test the system
@@ -1238,6 +1303,39 @@ function clearProcessedLabels() {
     }
   } catch (error) {
     Logger.error('Error clearing processed labels', error);
+  }
+}
+
+/**
+ * Fix existing order number formatting to preserve leading zeros
+ * Run this once to fix any existing data that lost leading zeros
+ */
+function fixExistingOrderNumberFormatting() {
+  try {
+    const sheet = getOrCreateSheet();
+    if (!sheet) {
+      Logger.error('Could not access Google Sheet');
+      return;
+    }
+    
+    const lastRow = sheet.getLastRow();
+    if (lastRow <= 1) {
+      Logger.info('No data rows to fix');
+      return;
+    }
+    
+    // Format order number columns (B and F) as text for all existing data
+    const orderNumberColumn = sheet.getRange(2, 2, lastRow - 1, 1);
+    orderNumberColumn.setNumberFormat('@');
+    
+    const correctOrderNumberColumn = sheet.getRange(2, 6, lastRow - 1, 1);
+    correctOrderNumberColumn.setNumberFormat('@');
+    
+    Logger.info(`Fixed formatting for ${lastRow - 1} rows in order number columns`);
+    Logger.info('Note: You may need to manually re-enter order numbers that already lost leading zeros');
+    
+  } catch (error) {
+    Logger.error('Error fixing order number formatting', error);
   }
 }
 
