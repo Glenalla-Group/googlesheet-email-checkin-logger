@@ -13,10 +13,10 @@
 
 const CHECKIN_CONFIG = {
   // Your Google Sheet ID (found in the URL between /d/ and /edit)
-  SHEET_ID: '1uK9Vv6rEQ8-WUc3core1TJtozUdLZP0bnlsf9qUsnL0',
+  SHEET_ID: '13MPdSzlxW5gCOj_zLKVlUt9Z0cPY9fpLKC9Bjm0WeCA',
   
   // Sheet name where data will be logged
-  SHEET_NAME: 'PrepWorx Checkins',
+  SHEET_NAME: 'CheckIn',
   
   // Email settings
   EMAIL_FROM: 'beta@prepworx.io',
