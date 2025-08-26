@@ -47,9 +47,9 @@ function processNewEmails() {
       return;
     }
     
-    // Search for unprocessed PrepWorx emails
+    // Search for unprocessed PrepWorx emails (unlimited)
     const searchQuery = `from:${CHECKIN_CONFIG.EMAIL_FROM} subject:"${CHECKIN_CONFIG.EMAIL_SUBJECT_CONTAINS}" subject:"${CHECKIN_CONFIG.EMAIL_SUBJECT_PROCESSED}" -label:${CHECKIN_CONFIG.PROCESSED_LABEL}`;
-    const threads = GmailApp.search(searchQuery, 0, 50);
+    const threads = GmailApp.search(searchQuery);
     
     Logger.info(`Found ${threads.length} unprocessed email threads`);
     
@@ -194,33 +194,38 @@ function extractEmailData(message) {
 function extractShipmentNumber(subject, content = '') {
   try {
     // First try to extract from subject
-    // Pattern: "Inbound 0017327917518 has been processed."
+    
     const subjectPatterns = [
-      /Inbound\s+([A-Z0-9]+)/i,                    // Standard pattern for any alphanumeric
-      /Inbound\s+(\d+)/i,                         // Pattern for pure numbers (like 0017327917518)
-      /Inbound\s+([A-Z]+\d+)/i,                   // Pattern like SNP20046045
+      /Inbound\s+([A-Z0-9\s\-]+?)\s+has\s+been\s+processed/i,  // Full pattern with spaces and hyphens until "has been processed"
+      /Inbound\s+([A-Z0-9\s\-]+)/i,               // Pattern with spaces and hyphens
+      /Inbound\s+([A-Z0-9]+)/i,                   // Standard pattern for any alphanumeric (fallback)
+      /Inbound\s+(\d+)/i,                         // Pattern for pure numbers (like 0017327917518) (fallback)
+      /Inbound\s+([A-Z]+\d+)/i,                   // Pattern like SNP20046045 (fallback)
     ];
     
     for (const pattern of subjectPatterns) {
       const match = subject.match(pattern);
       if (match && match[1]) {
-        return match[1];
+        return match[1].trim();
       }
     }
     
     // If not found in subject, try to extract from content
-    // Pattern: "inbound shipment named 0017327917518"
+    
     if (content) {
       const contentPatterns = [
-        /inbound\s+shipment\s+named\s+([A-Z0-9]+)/i,
-        /shipment\s+named\s+([A-Z0-9]+)/i,
-        /named\s+([A-Z0-9]+)/i
+        /inbound\s+shipment\s+named\s+([A-Z0-9\s\-]+?)(?:\s*\.|\s*$)/i,  // Pattern with spaces and hyphens until period or end
+        /shipment\s+named\s+([A-Z0-9\s\-]+?)(?:\s*\.|\s*$)/i,          // Pattern with spaces and hyphens until period or end
+        /named\s+([A-Z0-9\s\-]+?)(?:\s*\.|\s*$)/i,                     // Pattern with spaces and hyphens until period or end
+        /inbound\s+shipment\s+named\s+([A-Z0-9]+)/i,                   // Fallback: alphanumeric only
+        /shipment\s+named\s+([A-Z0-9]+)/i,                             // Fallback: alphanumeric only
+        /named\s+([A-Z0-9]+)/i                                         // Fallback: alphanumeric only
       ];
       
       for (const pattern of contentPatterns) {
         const match = content.match(pattern);
         if (match && match[1]) {
-          return match[1];
+          return match[1].trim();
         }
       }
     }
@@ -1261,7 +1266,7 @@ function testEmailProcessing() {
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const searchQuery = `from:${CHECKIN_CONFIG.EMAIL_FROM} after:${Utilities.formatDate(yesterday, Session.getScriptTimeZone(), 'yyyy/MM/dd')}`;
     
-    const threads = GmailApp.search(searchQuery, 0, 10);
+    const threads = GmailApp.search(searchQuery);
     Logger.info(`Found ${threads.length} recent email threads for testing`);
     
     let processedCount = 0;
