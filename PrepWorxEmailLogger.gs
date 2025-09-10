@@ -27,8 +27,8 @@ const CHECKIN_CONFIG = {
   PROCESSED_LABEL: 'PrepWorx/Processed',
   
   // Processing intervals (in minutes)
-  CHECK_INTERVAL_MINUTES: 5,        // How often to check for new emails
-  RATE_LIMIT_SECONDS: 30            // Minimum time between processing runs
+  CHECK_INTERVAL_MINUTES: 2,        // More frequent checking to catch stacked emails
+  MAX_EMAILS_PER_RUN: 50            // Process more emails per run to handle stacking
 };
 
 // ==================== MAIN FUNCTIONS ====================
@@ -41,19 +41,19 @@ function processNewEmails() {
   try {
     Logger.info('Starting email processing...');
     
-    // Rate limiting check
-    if (!RateLimiter.canProcess()) {
-      Logger.info('Rate limited, skipping this run');
-      return;
+    // Search for unprocessed PrepWorx emails
+    const searchQuery = `from:${CHECKIN_CONFIG.EMAIL_FROM} subject:(${CHECKIN_CONFIG.EMAIL_SUBJECT_CONTAINS} ${CHECKIN_CONFIG.EMAIL_SUBJECT_PROCESSED}) -label:${CHECKIN_CONFIG.PROCESSED_LABEL}`;
+    
+    // Get threads and then extract individual messages to avoid stacking issues
+    const threads = GmailApp.search(searchQuery, 0, CHECKIN_CONFIG.MAX_EMAILS_PER_RUN);
+    const messages = [];
+    for (const thread of threads) {
+      messages.push(...thread.getMessages());
     }
     
-    // Search for unprocessed PrepWorx emails (unlimited)
-    const searchQuery = `from:${CHECKIN_CONFIG.EMAIL_FROM} subject:"${CHECKIN_CONFIG.EMAIL_SUBJECT_CONTAINS}" subject:"${CHECKIN_CONFIG.EMAIL_SUBJECT_PROCESSED}" -label:${CHECKIN_CONFIG.PROCESSED_LABEL}`;
-    const threads = GmailApp.search(searchQuery);
+    Logger.info(`Found ${threads.length} unprocessed email threads containing ${messages.length} messages`);
     
-    Logger.info(`Found ${threads.length} unprocessed email threads`);
-    
-    if (threads.length === 0) {
+    if (messages.length === 0) {
       Logger.info('No new emails to process');
       return;
     }
@@ -61,26 +61,31 @@ function processNewEmails() {
     // Get or create the processed label
     const processedLabel = getOrCreateLabel(CHECKIN_CONFIG.PROCESSED_LABEL);
     
-    // Process each thread
+    // Process each message individually
     let processedCount = 0;
-    for (const thread of threads) {
-      const messages = thread.getMessages();
-      
-      for (const message of messages) {
+    let skippedCount = 0;
+    
+    for (const message of messages) {
+      try {
         if (isFromPrepWorx(message)) {
           const success = processEmail(message);
           if (success) {
             processedCount++;
             updateActivityStats('processed');
+            
+            // Mark individual message as processed (not the entire thread)
+            message.addLabel(processedLabel);
+          } else {
+            skippedCount++;
           }
         }
+      } catch (error) {
+        Logger.error(`Error processing message ${message.getId()}`, error);
+        skippedCount++;
       }
-      
-      // Mark thread as processed
-      thread.addLabel(processedLabel);
     }
     
-    Logger.info(`Successfully processed ${processedCount} emails`);
+    Logger.info(`Successfully processed ${processedCount} emails, skipped ${skippedCount}`);
     
   } catch (error) {
     Logger.error('Error in processNewEmails', error);
@@ -549,13 +554,14 @@ function logToSheet(emailData) {
       // Create a temporary emailData object for duplicate checking
       const itemEmailData = {
         orderNumber: emailData.orderNumber,
+        dateTime: emailData.dateTime || formatDate(emailData.emailDate),
         itemName: item.itemName,
         asin: item.asin
       };
       
-      // Check for duplicates
+      // Check for duplicates (only prevents same order number + date/time combinations)
       if (isDuplicateEntry(sheet, itemEmailData)) {
-        Logger.info(`Duplicate entry found for item ${item.itemName}, skipping...`);
+        Logger.info(`Duplicate entry found for order ${itemEmailData.orderNumber} with date ${itemEmailData.dateTime}, skipping...`);
         continue;
       }
       
@@ -620,6 +626,8 @@ function getOrCreateSheet() {
 
 /**
  * Check if this entry already exists in the sheet
+ * Only prevents duplicates when both order number AND date/time are identical
+ * Allows storing same items (item name + ASIN) with different order numbers or dates
  */
 function isDuplicateEntry(sheet, emailData) {
   try {
@@ -633,15 +641,25 @@ function isDuplicateEntry(sheet, emailData) {
     const dataRange = sheet.getRange(2, 1, lastRow - 1, 6);
     const values = dataRange.getValues();
     
-    // Check for duplicates based on order number and item name
+    // Check for duplicates based on order number AND date/time only
+    // This allows same items to be stored if they have different order numbers or different dates
     for (const row of values) {
-      const existingOrderNumber = row[1]; // Column B
-      const existingItemName = row[2];    // Column C
-      const existingASIN = row[3];        // Column D
+      const existingDateTime = row[0];     // Column A - Date & Time
+      const existingOrderNumber = row[1];  // Column B - Order Number
       
+      // Convert date/time values to strings for comparison
+      const existingDateTimeStr = typeof existingDateTime === 'string' ? 
+        existingDateTime : 
+        (existingDateTime instanceof Date ? formatDate(existingDateTime) : String(existingDateTime));
+      
+      const currentDateTimeStr = typeof emailData.dateTime === 'string' ? 
+        emailData.dateTime : 
+        String(emailData.dateTime);
+      
+      // Only consider it a duplicate if BOTH order number AND date/time match
       if (existingOrderNumber === emailData.orderNumber &&
-          existingItemName === emailData.itemName &&
-          existingASIN === emailData.asin) {
+          existingDateTimeStr === currentDateTimeStr) {
+        Logger.info(`Duplicate entry found: Order ${emailData.orderNumber} with date ${currentDateTimeStr} already exists`);
         return true;
       }
     }
@@ -807,38 +825,6 @@ class Logger {
 }
 
 /**
- * Rate limiting helper
- */
-class RateLimiter {
-  static canProcess() {
-    try {
-      const properties = PropertiesService.getScriptProperties();
-      const lastRun = properties.getProperty('LAST_PROCESS_TIME');
-      const minInterval = CHECKIN_CONFIG.RATE_LIMIT_SECONDS * 1000; // Convert to milliseconds
-      
-      if (!lastRun) {
-        properties.setProperty('LAST_PROCESS_TIME', Date.now().toString());
-        return true;
-      }
-      
-      const timeSinceLastRun = Date.now() - parseInt(lastRun);
-      
-      if (timeSinceLastRun >= minInterval) {
-        properties.setProperty('LAST_PROCESS_TIME', Date.now().toString());
-        return true;
-      }
-      
-      Logger.info(`Rate limited. Time since last run: ${timeSinceLastRun}ms`);
-      return false;
-      
-    } catch (error) {
-      Logger.error('Error in rate limiting', error);
-      return true; // Allow processing if rate limiting fails
-    }
-  }
-}
-
-/**
  * Format date consistently
  */
 function formatDate(date) {
@@ -928,20 +914,20 @@ function updateActivityStats(type, data = {}) {
 
 /**
  * Complete setup wizard - runs all setup steps
- * RUN THIS FIRST after CHECKIN_CONFIGuring your SHEET_ID
+ * RUN THIS FIRST after configuring your SHEET_ID
  */
 function completeSetup() {
   try {
     Logger.info('Starting complete setup...');
     
-    // Step 1: Validate CHECKIN_CONFIGuration
-    Logger.info('Step 1: Validating CHECKIN_CONFIGuration...');
-    const CHECKIN_CONFIGValidation = validateCHECKIN_CONFIGuration();
+    // Step 1: Validate configuration
+    Logger.info('Step 1: Validating configuration...');
+    const configValidation = validateConfiguration();
     
-    if (!CHECKIN_CONFIGValidation.valid) {
-      Logger.error('CHECKIN_CONFIGuration validation failed', CHECKIN_CONFIGValidation.errors);
-      console.error('Setup failed. Please fix CHECKIN_CONFIGuration errors:');
-      CHECKIN_CONFIGValidation.errors.forEach(error => console.error('- ' + error));
+    if (!configValidation.valid) {
+      Logger.error('Configuration validation failed', configValidation.errors);
+      console.error('Setup failed. Please fix configuration errors:');
+      configValidation.errors.forEach(error => console.error('- ' + error));
       return false;
     }
     
@@ -996,7 +982,7 @@ function setupEmailTrigger() {
     
     Logger.info('Email trigger set up successfully');
     
-    // Also set up a time-based trigger as backup
+    // Also set up a time-based trigger as backup - more frequent to catch stacked emails
     ScriptApp.newTrigger('processNewEmails')
       .timeBased()
       .everyMinutes(CHECKIN_CONFIG.CHECK_INTERVAL_MINUTES)
@@ -1061,22 +1047,22 @@ function initializeSheet() {
 }
 
 /**
- * CHECKIN_CONFIGuration validator
+ * Configuration validator
  */
-function validateCHECKIN_CONFIGuration() {
+function validateConfiguration() {
   const errors = [];
   
-  // Check required CHECKIN_CONFIGuration
+  // Check required configuration
   if (!CHECKIN_CONFIG.SHEET_ID || CHECKIN_CONFIG.SHEET_ID === 'YOUR_GOOGLE_SHEET_ID_HERE') {
-    errors.push('SHEET_ID must be CHECKIN_CONFIGured with your actual Google Sheet ID');
+    errors.push('SHEET_ID must be configured with your actual Google Sheet ID');
   }
   
   if (!CHECKIN_CONFIG.EMAIL_FROM) {
-    errors.push('EMAIL_FROM must be CHECKIN_CONFIGured');
+    errors.push('EMAIL_FROM must be configured');
   }
   
   if (!CHECKIN_CONFIG.SHEET_NAME) {
-    errors.push('SHEET_NAME must be CHECKIN_CONFIGured');
+    errors.push('SHEET_NAME must be configured');
   }
   
   // Test sheet access
@@ -1097,11 +1083,11 @@ function validateCHECKIN_CONFIGuration() {
   }
   
   if (errors.length > 0) {
-    Logger.error('CHECKIN_CONFIGuration validation failed', errors);
+    Logger.error('Configuration validation failed', errors);
     return { valid: false, errors: errors };
   }
   
-  Logger.info('CHECKIN_CONFIGuration validation passed');
+  Logger.info('Configuration validation passed');
   return { valid: true, errors: [] };
 }
 
@@ -1114,7 +1100,7 @@ function healthCheck() {
     
     const results = {
       timestamp: new Date().toISOString(),
-      CHECKIN_CONFIGuration: validateCHECKIN_CONFIGuration(),
+      configuration: validateConfiguration(),
       triggers: checkTriggers(),
       permissions: checkPermissions(),
       recentActivity: getRecentActivity()
@@ -1223,7 +1209,7 @@ function displaySetupSummary() {
     const summary = `
 === PREPWORX EMAIL LOGGER SETUP COMPLETE ===
 
-✅ CHECKIN_CONFIGuration validated
+✅ Configuration validated
 ✅ Google Sheet initialized
 ✅ Email triggers created (${emailTriggers.length} active)
 ✅ System health check passed
@@ -1242,7 +1228,7 @@ Next steps:
 ⚠️  If you encounter issues:
 - Run healthCheck() for diagnostics
 - Check the execution logs
-- Use testEmailProcessing() to debug
+- Verify your configuration
     `;
     
     console.log(summary);
@@ -1250,122 +1236,5 @@ Next steps:
     
   } catch (error) {
     Logger.error('Error displaying setup summary', error);
-  }
-}
-
-
-/**
- * Manual test function - processes emails from the last 24 hours
- * Use this to test the system
- */
-function testEmailProcessing() {
-  try {
-    Logger.info('Running test email processing...');
-    
-    // Search for PrepWorx emails from last 24 hours
-    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const searchQuery = `from:${CHECKIN_CONFIG.EMAIL_FROM} after:${Utilities.formatDate(yesterday, Session.getScriptTimeZone(), 'yyyy/MM/dd')}`;
-    
-    const threads = GmailApp.search(searchQuery);
-    Logger.info(`Found ${threads.length} recent email threads for testing`);
-    
-    let processedCount = 0;
-    for (const thread of threads) {
-      const messages = thread.getMessages();
-      
-      for (const message of messages) {
-        if (isFromPrepWorx(message)) {
-          Logger.info(`Testing email: ${message.getSubject()}`);
-          const emailData = extractEmailData(message);
-          
-          if (emailData) {
-            Logger.info('Extracted data', emailData);
-            processedCount++;
-          }
-        }
-      }
-    }
-    
-    Logger.info(`Test completed. Processed ${processedCount} emails.`);
-    
-  } catch (error) {
-    Logger.error('Error in test', error);
-  }
-}
-
-/**
- * Clear all processed labels (for testing)
- */
-function clearProcessedLabels() {
-  try {
-    const label = GmailApp.getUserLabelByName(CHECKIN_CONFIG.PROCESSED_LABEL);
-    if (label) {
-      const threads = label.getThreads();
-      for (const thread of threads) {
-        thread.removeLabel(label);
-      }
-      Logger.info(`Removed processed label from ${threads.length} threads`);
-    }
-  } catch (error) {
-    Logger.error('Error clearing processed labels', error);
-  }
-}
-
-/**
- * Fix existing order number formatting to preserve leading zeros
- * Run this once to fix any existing data that lost leading zeros
- */
-function fixExistingOrderNumberFormatting() {
-  try {
-    const sheet = getOrCreateSheet();
-    if (!sheet) {
-      Logger.error('Could not access Google Sheet');
-      return;
-    }
-    
-    const lastRow = sheet.getLastRow();
-    if (lastRow <= 1) {
-      Logger.info('No data rows to fix');
-      return;
-    }
-    
-    // Format order number columns (B and F) as text for all existing data
-    const orderNumberColumn = sheet.getRange(2, 2, lastRow - 1, 1);
-    orderNumberColumn.setNumberFormat('@');
-    
-    const correctOrderNumberColumn = sheet.getRange(2, 6, lastRow - 1, 1);
-    correctOrderNumberColumn.setNumberFormat('@');
-    
-    Logger.info(`Fixed formatting for ${lastRow - 1} rows in order number columns`);
-    Logger.info('Note: You may need to manually re-enter order numbers that already lost leading zeros');
-    
-  } catch (error) {
-    Logger.error('Error fixing order number formatting', error);
-  }
-}
-
-/**
- * Get sheet statistics
- */
-function getSheetStats() {
-  try {
-    const sheet = getOrCreateSheet();
-    if (!sheet) return null;
-    
-    const lastRow = sheet.getLastRow();
-    const totalEntries = Math.max(0, lastRow - 1); // Subtract header row
-    
-    const stats = {
-      totalEntries: totalEntries,
-      lastUpdate: totalEntries > 0 ? sheet.getRange(lastRow, 1).getValue() : null,
-      sheetUrl: sheet.getParent().getUrl()
-    };
-    
-    Logger.info('Sheet statistics', stats);
-    return stats;
-    
-  } catch (error) {
-    Logger.error('Error getting sheet stats', error);
-    return null;
   }
 }
